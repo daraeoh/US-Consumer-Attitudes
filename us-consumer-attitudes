@@ -1,6 +1,165 @@
-echo "# US-Consumer-Attitudes" >> README.md
-git init
-git add README.md
-git commit -m "first commit"
-git remote add origin https://github.com/daraeoh/US-Consumer-Attitudes.git
-git push -u origin master
+#6-month data at the beginning of the recession
+oct07<-da35402.0001
+nov07<-da35403.0001
+dec07<-da35404.0001
+jan08<-da35405.0001
+feb08<-da35406.0001
+mar08<-da35407.0001
+
+#6-month data at the end of the recession
+mar09<-da35419.0001
+apr09<-da35420.0001
+may09<-da35421.0001
+jun09<-da35422.0001
+jul09<-da35423.0001
+aug09<-da35424.0001
+
+library(tidyverse)
+library(lme4)
+library(Hmisc)
+
+#stack the data for first and last six month of the recession separately with selected covariates
+DATA <- list(oct07,nov07,dec07,jan08,feb08,mar08,mar09,apr09,may09,jun09,jul09,aug09)
+FRAME<-data.frame()
+SELECTION<-function(DATA,i){
+  for (data in DATA) {
+sele<-dplyr::select(data,NUMKID,MARRY,NUMADT,INCOME,NEWS1,GOVT,EDUC,SEX,AGE,HOMEOWN,RACE,REGION9,ICS,WT_HH)
+    sele$month<-rep(i,nrow(sele))
+    FRAME<-rbind(FRAME,sele)
+    i=i+1
+  } 
+  return(FRAME)
+}
+stacked <- SELECTION(DATA,i=-6)
+
+# Variables Transformation
+#square month
+stacked$month_sq <- stacked$month^2
+#resclae weights so that the sum of weights euqal to 500 for each month
+for (i in -6:5) {
+  stacked$WT_HH[stacked$month==i] <- 
+    stacked$WT_HH[stacked$month==i]*(500/length(which(stacked$month==i)))
+}
+#center and square age
+stacked$age<-stacked$AGE-mean(stacked$AGE,na.rm=TRUE)
+stacked$age_sq<-stacked$age^2
+#center number of adults
+stacked$numadt<-stacked$NUMADT-4
+#recode based on codebook
+stacked$NUMKID[which(stacked$NUMKID==96)]<-0
+#log transform and center income
+stacked$income<-log(stacked$INCOME+1)-mean(log(stacked$INCOME+1),na.rm=TRUE)
+#recode categorical variables
+stacked <- stacked %>%
+  mutate(educ=case_when(
+    EDUC=="(1) Grade 0-8 no high school diploma" | EDUC=="(2) Grade 9-12 no high school diploma" ~ 1,
+    EDUC=="(3) Grade 0-12 with high school diploma" ~ 0,
+    EDUC=="(4) Grade 13-17 with some college"|EDUC=="(5) Grade 13-16 with bachelors degree"|EDUC=="(6) Grade 17 with college degree" ~ 2
+  )) %>%
+  mutate(marry=case_when(
+    MARRY %in% c("(3) Divorced","(4) Widowed","(5) Never married")~0,
+    MARRY %in% c("(2) Separated",
+                 "(6) Married, but spouse away in service; in nursing home, or living in a separate location",
+                 "(1) Married (Living with a partner)")~1
+  )) %>%
+  mutate(news=case_when(
+    grepl("UNFAV",NEWS1)==TRUE ~ 1,
+    grepl("FAV",NEWS1)==TRUE ~ 2,
+    grepl("(00)",NEWS1)==TRUE ~ 0
+  ))  %>%
+  mutate(homeown=case_when(
+    HOMEOWN=="(1) Owns or is buying" ~ 0,
+    HOMEOWN!="(1) Owns or is buying" ~ 1
+  ))  %>%
+  mutate(region=case_when(
+    REGION9 %in% c("(9) Pacific","(8) Mountain") ~ 1,
+    REGION9 %in% c("(3) East North Central","(4) West North Central","(6) East South Central","(7) West South Central") ~ 2,
+    REGION9 %in% c("(2) Mid-Atlantic","(5) South-Atlantic","(1) New England") ~ 3
+  )) %>%
+  mutate(race=case_when(
+    RACE=="(1) WHITE EXCEPT HISPANIC" ~ 0,
+    RACE=="(2) BLACK EXCEPT HISPANIC" ~ 1,
+    RACE!="(1) WHITE EXCEPT HISPANIC" & RACE!="(2) BLACK EXCEPT HISPANIC"~2
+  )) %>%
+  mutate(govt=ifelse(GOVT=="(3) Only fair",0,GOVT)) %>%
+  mutate(time=case_when(
+    month <=1 ~ 0,
+    month >=0 ~ 1
+  ))
+#Data Exploration
+#check the distribution of ICS: almost normally distributed
+ggplot(stacked,aes(x=ICS))+
+  geom_bar()
+#descriptive statistics of continuous covariates (mean, range, number of obs)
+stacked %>% select(AGE,INCOME,NUMKID,NUMADT) %>% describe()
+#check the relationship between ICS and selected covariates
+#month
+stacked %>%
+  group_by(month) %>%
+  summarise(Mean_ICS=mean(ICS)) %>%
+  ggplot(aes(month,Mean_ICS))+
+  geom_point()+
+  ylab("Mean ICS")+
+  xlab("Month")+
+  geom_smooth()
+#AGE: Distribution before & after centering
+ggplot(stacked)+
+  geom_bar(aes(x=age))+
+  geom_bar(aes(x=AGE),color="light blue")
+#AGE: relationship with ICS
+stacked %>%
+  dplyr::select(age,ICS) %>%
+  group_by(age) %>%
+  summarise(Mean_ICS=mean(ICS,na.rm=TRUE)) %>%
+  ggplot(aes(x=age,y=Mean_ICS))+
+  geom_point()+
+  ylab("Mean ICS")+
+  xlab("Age")+
+  geom_smooth()
+#NUMKID
+ggplot(stacked,aes(x=NUMKID,y=ICS))+
+  geom_jitter(alpha=0.3)
+stacked %>%
+  select(NUMKID,ICS) %>%
+  group_by(NUMKID) %>%
+  summarise(Mean_ICS=mean(ICS,na.rm=TRUE)) %>%
+  ggplot(aes(x=NUMKID,y=Mean_ICS))+
+  geom_point()
+#INCOME
+stacked %>%
+  dplyr::select(income,ICS) %>%
+  group_by(income) %>%
+  summarise(Mean_ICS=mean(ICS,na.rm=TRUE)) %>%
+  ggplot(aes(x=income,y=Mean_ICS))+
+  geom_point()+
+  ylab("Mean ICS")+
+  xlab("centered log(income+1)")+
+  geom_smooth()
+#NUMADT
+stacked %>%
+  select(numadt,ICS) %>%
+  group_by(numadt) %>%
+  summarise(Mean_ICS=mean(ICS,na.rm=TRUE)) %>%
+  ggplot(aes(x=numadt,y=Mean_ICS))+
+  geom_point()+
+  geom_smooth(method = "lm")
+
+#Simple Linear Regression
+stacked.1 <- lm(ICS~month_sq, 
+             data = stacked,
+             weights = WT_HH)
+stacked.2 <- lm(ICS~month_sq+age_sq+SEX+NUMKID+numadt+income+factor(educ)+marry+factor(govt)+factor(news)+factor(homeown)+factor(race)+factor(region), 
+              data = stacked,
+              weights = WT_HH)
+summary(stacked.1)
+summary(stacked.2)
+#add interaction term
+stacked.3 <- lm(ICS~month_sq+age_sq+SEX+NUMKID+numadt+income+time:income+factor(educ)+marry+factor(govt)+time:factor(govt)+factor(news)+factor(homeown)+factor(race)+time:factor(race)+factor(region), 
+                data = stacked,
+                weights = WT_HH)
+summary(stacked.3)
+#diagnostics
+plot(stacked.1)
+plot(stacked.2)
+plot(stacked.3)
+par(mfrow=c(2,2))
